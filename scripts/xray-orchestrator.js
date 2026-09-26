@@ -1,5 +1,6 @@
-import { appendFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
-import { resolve, dirname } from 'node:path';
+import { appendFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { resolve, dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -230,6 +231,36 @@ export function validateSelection(report, keys) {
   for (const [key, count] of counts) if (count !== 1) throw new Error(`${key} matched ${count} cases; expected exactly one Chromium case.`);
 }
 
+/** Read discovery data from a dedicated file: config imports and dotenv may log
+ * to stdout even when the JSON reporter is selected. A fresh directory also
+ * prevents accidentally accepting a report left by a previous invocation.
+ */
+export async function discoverTests(cwd, keys, env = process.env, cli = resolve(cwd, 'node_modules/@playwright/test/cli.js')) {
+  const directory = await mkdtemp(join(tmpdir(), 'xray-discovery-'));
+  const output = join(directory, 'tests.json');
+  try {
+    const discovery = spawnSync(process.execPath, [cli, 'test', '--project=chromium', '--grep', buildGrepFilter(keys), '--list', '--reporter=json'], {
+      cwd, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
+      env: {
+        ...env, XRAY_RUN: 'true', PLAYWRIGHT_JSON_OUTPUT_FILE: output,
+        PLAYWRIGHT_JSON_OUTPUT_DIR: directory, PLAYWRIGHT_JSON_OUTPUT_NAME: 'tests.json',
+      },
+    });
+    if (discovery.error || discovery.status !== 0) throw new Error('Playwright discovery failed. Check source configuration and dependencies.');
+    let report;
+    try {
+      report = JSON.parse(await readFile(output, 'utf8'));
+    } catch {
+      throw new Error('Playwright discovery did not produce a valid JSON report file. Check JSON reporter configuration.');
+    }
+    validateSelection(report, keys);
+    return report;
+  } finally {
+    // Only this uniquely generated temporary directory is removed.
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 export async function main(command = process.argv[2]) {
   if (command === 'validate') {
     validateKey(required('TEST_PLAN_KEY'), 'Test Plan key');
@@ -255,12 +286,7 @@ export async function main(command = process.argv[2]) {
     // Existing source frameworks can disable retries specifically for Xray runs.
     const runEnv = { ...process.env, XRAY_RUN: 'true' };
     // Avoid shell interpolation, npx downloads and OS-specific command quoting.
-    const discovery = spawnSync(process.execPath, [...args, '--list', '--reporter=json'], {
-      cwd, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
-      env: { ...runEnv, PLAYWRIGHT_JSON_OUTPUT_FILE: '', PLAYWRIGHT_JSON_OUTPUT_NAME: '' },
-    });
-    if (discovery.error || discovery.status !== 0) throw new Error('Playwright discovery failed. Check source configuration and dependencies.');
-    validateSelection(JSON.parse(discovery.stdout), selection.keys);
+    await discoverTests(cwd, selection.keys, runEnv, cli);
     const run = spawnSync(process.execPath, args, { cwd, stdio: 'inherit', env: runEnv });
     if (run.error) throw new Error('Could not start Playwright.');
     process.exitCode = run.status ?? 1;

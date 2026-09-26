@@ -5,7 +5,7 @@ import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
-import { validateSelection, buildGrepFilter } from '../scripts/xray-orchestrator.js';
+import { discoverTests, buildGrepFilter } from '../scripts/xray-orchestrator.js';
 
 test('real Playwright discovery and JUnit preserve passing, failing and skipped keys', async () => {
   const source = fileURLToPath(new URL('../source-repo/', import.meta.url));
@@ -14,11 +14,13 @@ test('real Playwright discovery and JUnit preserve passing, failing and skipped 
   try {
     await writeFile(join(dir, 'playwright.config.ts'), `
       import base from '../playwright.config';
+      console.log('◇ injected environment variables (simulated dotenv startup message)');
       export default { ...base, testDir: '.', workers: 1 };
     `);
     await writeFile(join(dir, 'contract.spec.ts'), `
       import { test, expect } from '@playwright/test';
       import { xray } from '../tests/xray';
+      console.log('Test module startup message with {braces}');
       test('pass & preserve XML', xray('PROJ-1'), async () => { expect(1).toBe(1); });
       test('intentional failure', xray('PROJ-2'), async () => { expect(1).toBe(2); });
       test.skip('skipped', xray('PROJ-3'), async () => {});
@@ -29,7 +31,15 @@ test('real Playwright discovery and JUnit preserve passing, failing and skipped 
     const options = { cwd: dir, encoding: 'utf8', env: { ...process.env, CI: 'true' } };
     const list = spawnSync(process.execPath, [...args, '--list', '--reporter=json'], options);
     assert.equal(list.status, 0, list.stderr);
-    validateSelection(JSON.parse(list.stdout), keys);
+    assert.throws(() => JSON.parse(list.stdout), SyntaxError, 'Startup logging reproduces the original stdout parsing failure');
+    const discovered = await discoverTests(dir, keys, {
+      ...options.env,
+      // Inherited reporter paths must not override the dedicated discovery file.
+      PLAYWRIGHT_JSON_OUTPUT_FILE: join(dir, 'stale.json'),
+      PLAYWRIGHT_JSON_OUTPUT_DIR: dir,
+      PLAYWRIGHT_JSON_OUTPUT_NAME: 'stale.json',
+    }, args[0]);
+    assert.equal(discovered.errors.length, 0);
     const run = spawnSync(process.execPath, args, options);
     assert.equal(run.status, 1, 'The intentional assertion failure must remain a failed process.');
     const xml = await readFile(join(dir, 'results/xray-results.xml'), 'utf8');

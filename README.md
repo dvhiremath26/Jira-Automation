@@ -100,6 +100,8 @@ Playwright dependencies, if added to an existing config, must follow the same
 mapping contract or be implemented as fixtures rather than untagged project tests.
 
 The filter uses whitespace boundaries, so `@PROJ-1` does not match `@PROJ-10`.
+Discovery reads the JSON reporter's dedicated temporary file, so dotenv and test
+module startup messages on stdout cannot corrupt the selection data.
 An empty Plan stops execution. All nested Xray Test pages are retrieved in batches
 of 100; unexpected offsets, changing totals and duplicate pages fail explicitly.
 
