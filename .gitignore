@@ -1,0 +1,14 @@
+node_modules/
+.env
+.env.*
+!.env.example
+.npm-cache/
+.playwright-browsers/
+.contract-*/
+.state/
+test-results/
+results/
+playwright-report/
+TCOE-Report/
+playwright-report.zip
+tcoe-playwright-repo/

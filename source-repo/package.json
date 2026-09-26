@@ -1,0 +1,15 @@
+{
+  "name": "tcoe-playwright",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test": "playwright test",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": { "node": ">=20" },
+  "devDependencies": {
+    "@playwright/test": "1.58.2",
+    "@types/node": "20.19.9",
+    "typescript": "5.9.3"
+  }
+}

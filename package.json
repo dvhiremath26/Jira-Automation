@@ -1,0 +1,12 @@
+{
+  "name": "playwright-ci-runner",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "check": "node --check scripts/xray-orchestrator.js",
+    "test:integration": "node --test verification/playwright-contract.js"
+  }
+}

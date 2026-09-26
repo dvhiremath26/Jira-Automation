@@ -1,0 +1,111 @@
+name: Execute Xray Test Plan
+
+on:
+  repository_dispatch:
+    types: [execute-xray-tests]
+  workflow_dispatch:
+    inputs:
+      testPlanKey:
+        description: Existing Xray Test Plan key
+        required: true
+        type: string
+      testExecKey:
+        description: Existing Xray Test Execution key
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# Serialize updates to the same execution; do not cancel an active result upload.
+# GitHub concurrency is not a durable FIFO queue; use a new Execution per request.
+concurrency:
+  group: xray-${{ github.event.client_payload.testExecKey || inputs.testExecKey || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CI: 'true'
+      TEST_PLAN_KEY: ${{ github.event.client_payload.testPlanKey || inputs.testPlanKey }}
+      TEST_EXEC_KEY: ${{ github.event.client_payload.testExecKey || inputs.testExecKey }}
+    steps:
+      - name: Check out runner
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Validate dispatch
+        run: node scripts/xray-orchestrator.js validate
+
+      - name: Check out test source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.SOURCE_REPOSITORY }}
+          ref: ${{ vars.SOURCE_REF || 'main' }}
+          token: ${{ secrets.CROSS_REPO_PAT }}
+          path: tcoe-playwright-repo
+          persist-credentials: false
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: tcoe-playwright-repo/package-lock.json
+
+      - name: Install source dependencies
+        working-directory: tcoe-playwright-repo
+        run: npm ci
+
+      - name: Install Chromium
+        working-directory: tcoe-playwright-repo
+        run: npx playwright install --with-deps chromium
+
+      - name: Select Tests and associate Execution with Plan
+        id: selection
+        env:
+          XRAY_CLIENT_ID: ${{ secrets.XRAY_CLIENT_ID }}
+          XRAY_CLIENT_SECRET: ${{ secrets.XRAY_CLIENT_SECRET }}
+        run: node scripts/xray-orchestrator.js select
+
+      - name: Execute selected Playwright tests
+        id: tests
+        continue-on-error: true
+        # Reads the same grep exported by selection from .state/selection.json.
+        # Node passes it as one argument without evaluating it as shell code.
+        run: node scripts/xray-orchestrator.js run
+
+      - name: Import JUnit results into Xray
+        if: always() && steps.tests.outcome != 'skipped'
+        env:
+          XRAY_CLIENT_ID: ${{ secrets.XRAY_CLIENT_ID }}
+          XRAY_CLIENT_SECRET: ${{ secrets.XRAY_CLIENT_SECRET }}
+        run: node scripts/xray-orchestrator.js import
+
+      - name: Attach HTML report to Jira
+        if: always() && steps.tests.outcome != 'skipped'
+        env:
+          JIRA_DOMAIN: ${{ secrets.JIRA_DOMAIN }}
+          JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: node scripts/xray-orchestrator.js attach
+
+      - name: Preserve reports for troubleshooting
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xray-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            tcoe-playwright-repo/results/xray-results.xml
+            tcoe-playwright-repo/TCOE-Report/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Fail when tests failed
+        if: always() && steps.tests.outcome == 'failure'
+        run: |
+          echo 'Playwright execution or discovery failed. Check test logs and preserved reports.'
+          exit 1
