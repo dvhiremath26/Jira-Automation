@@ -1,5 +1,11 @@
 # Jira / Xray / Playwright orchestration
 
+Supports **Jira Cloud + Xray Cloud** and **Jira Data Center + Xray Data Center**.
+Cloud remains the default. For Data Center (including setup for Jira 10.3.22),
+follow [Data Center configuration and live verification](docs/jira-datacenter.md).
+An installed, compatible Xray app is required; live Data Center compatibility
+has not yet been verified against your server.
+
 This directory is the **playwright-ci-runner** repository. Copy the contents of
 `source-repo/` into **TCOE-Playwright** (merge with an existing suite rather than
 overwriting it). `PROMPT.md` is the original specification.
@@ -30,6 +36,8 @@ flowchart LR
 | --- | --- |
 | `.github/workflows/run-xray-playwright.yml` | Dispatch, checkout, execution and publication |
 | `scripts/xray-orchestrator.js` | Native Node.js fetch, GraphQL pagination, selection, import and attachment |
+| `scripts/xray-datacenter.js` | Data Center REST selection, association, import and HTML attachment |
+| `scripts/api-common.js` | Shared validation, HTTP timeouts/retries and report file checks |
 | `source-repo/playwright.config.ts` | HTML + built-in JUnit reporters, Chromium |
 | `source-repo/tests/example.spec.ts` | Self-contained browser test |
 | `source-repo/tests/xray.ts` | Shared tag and static annotation helper |
@@ -56,8 +64,9 @@ flowchart LR
 4. Put this runner project's workflow and scripts on the runner repository's
    **default branch**. Keep its package files and tests for local verification.
    No runtime npm dependencies are needed in the runner.
-5. In runner repository **Settings > Secrets and variables > Actions**, add all
-   six secrets and the `SOURCE_REPOSITORY` variable listed in the permissions guide.
+5. In runner repository **Settings > Secrets and variables > Actions**, add the
+   secrets for your deployment and `SOURCE_REPOSITORY` from the permissions guide
+   (or the Data Center guide above).
    Set `SOURCE_REPOSITORY` to `your-owner/TCOE-Playwright`. Optionally set
    `SOURCE_REF` to a reviewed commit SHA (preferred for reproducibility), tag or
    branch; otherwise `main` is used. Never take a source ref from the dispatch.
@@ -102,8 +111,9 @@ mapping contract or be implemented as fixtures rather than untagged project test
 The filter uses whitespace boundaries, so `@PROJ-1` does not match `@PROJ-10`.
 Discovery reads the JSON reporter's dedicated temporary file, so dotenv and test
 module startup messages on stdout cannot corrupt the selection data.
-An empty Plan stops execution. All nested Xray Test pages are retrieved in batches
+An empty Plan stops execution. Cloud retrieves nested Test pages in batches
 of 100; unexpected offsets, changing totals and duplicate pages fail explicitly.
+Data Center reads numbered REST pages until an empty page, rejecting duplicates.
 
 ## Failure and publication behavior
 
@@ -116,7 +126,7 @@ of 100; unexpected offsets, changing totals and duplicate pages fail explicitly.
   Xray statuses). Skips remain skips; they are not promoted to passes. Retries are
   disabled to avoid confusing retry aggregation. Jira issue workflow statuses are
   not transitioned by a JUnit import.
-- Fresh Xray authentication is performed for selection and import, so a long test
+- In Cloud mode, fresh Xray authentication is performed for selection and import, so a long test
   run does not reuse the initial access token. Tokens are kept in memory.
 - Read/auth calls retry transient failures twice with bounded backoff. Writes are
   not blindly retried: a timeout may occur after the service accepted the write.
@@ -153,7 +163,8 @@ node scripts/xray-orchestrator.js attach
 
 `.env.example` is documentation; it is not loaded automatically. By default the
 source checkout is `tcoe-playwright-repo/`. Set `SOURCE_DIR`, `XML_REPORT_PATH` and
-`HTML_REPORT_PATH` only for local alternate paths. Selection writes a non-secret
+`HTML_REPORT_PATH` for local alternate paths; `HTML_REPORT_PATH` is also supported
+as a GitHub Actions repository variable. Selection writes a non-secret
 `.state/selection.json` and exports `grep` when `GITHUB_OUTPUT` is present. Execution
 rebuilds that filter and passes it directly to the installed Playwright CLI using
 an argument array, equivalent to `npx playwright test --project=chromium --grep ...`.

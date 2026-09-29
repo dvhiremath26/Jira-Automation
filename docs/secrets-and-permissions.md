@@ -1,9 +1,14 @@
 # Secrets and permissions checklist
 
-Add these six **repository Actions secrets to playwright-ci-runner**. They are
+For Cloud mode (the default), add these six **repository Actions secrets to playwright-ci-runner**. They are
 only passed to the steps that use them. Check out only reviewed source code; npm
 scripts and tests execute on the runner. Limit who can change either repository's
 protected branches, source-ref variable and workflow files.
+
+For Data Center, use `JIRA_DEPLOYMENT=datacenter`, `JIRA_BASE_URL` and a `JIRA_PAT`
+secret instead of the five Cloud-specific secrets below. `CROSS_REPO_PAT` is
+required in both modes. See the [Data Center guide](jira-datacenter.md) for
+permissions, network access and optional `RUNNER_LABELS` configuration.
 
 | Secret | Value and required permissions |
 | --- | --- |
@@ -54,7 +59,7 @@ upload uses the Actions artifact service; no repository write permission is adde
 | `TEST_EXEC_KEY` | Supplied by dispatch/manual inputs | Existing Execution key |
 | `SOURCE_DIR` | Optional local environment | Default `tcoe-playwright-repo` |
 | `XML_REPORT_PATH` | Optional local environment | Default `tcoe-playwright-repo/results/xray-results.xml` |
-| `HTML_REPORT_PATH` | Optional local environment | Default `tcoe-playwright-repo/TCOE-Report/index.html` |
+| `HTML_REPORT_PATH` | Optional runner Actions variable or local environment | Default `tcoe-playwright-repo/TCOE-Report/index.html` |
 | `GITHUB_OUTPUT` | Automatically provided by Actions | Selection output file; do not configure manually in CI |
 | `CI` | Set by workflow | Prevents focused tests, limits workers |
 | `XRAY_RUN` | Set by orchestrator for source discovery/execution | Lets the existing framework disable retries specifically for Xray runs |

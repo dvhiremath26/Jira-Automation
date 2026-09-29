@@ -1,5 +1,11 @@
 # Jira Cloud Automation rule
 
+For Data Center, first complete the [Data Center setup](jira-datacenter.md).
+Use the same trigger, creation and dispatch sequence below in its Automation
+editor; available labels depend on your installation. The runner uses Xray REST
+for Plan membership and the Jira PAT user's permissions in that mode, in place
+of the Cloud GraphQL and API-key details below.
+
 Prerequisites: Xray Cloud is installed, Test Plan and Test Execution issue types
 are enabled in the project, and the Test Plan workflow includes an **Execute**
 status. Populate the Plan with automated Generic Tests. Allow `api.github.com`

@@ -1,54 +1,15 @@
-import { appendFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { resolve, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { setTimeout as delay } from 'node:timers/promises';
+import { validateKey, required, requestJson, readNonemptyFile } from './api-common.js';
+export { validateKey, requestJson } from './api-common.js';
+import { createDataCenterClient, dataCenterBaseUrl, deploymentMode } from './xray-datacenter.js';
 
 const XRAY = 'https://xray.cloud.getxray.app/api/v2';
 const KEY = /^[A-Z][A-Z0-9_]*-[1-9]\d*$/;
 const STATE = '.state/selection.json';
-
-export function validateKey(value, label = 'issue key') {
-  if (typeof value !== 'string' || !KEY.test(value) || value.length > 100) {
-    throw new Error(`Invalid ${label}; expected an uppercase Jira key such as PROJ-101.`);
-  }
-  return value;
-}
-
-function required(name) {
-  const value = process.env[name];
-  if (!value?.trim()) throw new Error(`Missing environment variable ${name}.`);
-  return value;
-}
-
-/** Bounded timeouts; retries only for read/auth operations, never ambiguous writes.
- * Response bodies are deliberately excluded from errors to avoid leaking credentials.
- */
-export async function requestJson(url, options, { label, retry = false } = {}) {
-  for (let attempt = 0; ; attempt++) {
-    let response;
-    let body;
-    try {
-      response = await fetch(url, { ...options, redirect: 'error', signal: AbortSignal.timeout(60_000) });
-      body = await response.text();
-    } catch {
-      if (retry && attempt < 2) { await delay(500 * 2 ** attempt); continue; }
-      throw new Error(`${label}: network failure or timeout. Check connectivity; writes may have completed.`);
-    }
-    if (!response.ok) {
-      if (retry && attempt < 2 && [429, 502, 503, 504].includes(response.status)) {
-        const header = response.headers.get('retry-after');
-        const seconds = header === null ? NaN : Number(header);
-        const wait = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header ?? '') - Date.now();
-        await delay(Math.min(30_000, Math.max(500, Number.isFinite(wait) ? wait : 500 * 2 ** attempt)));
-        continue;
-      }
-      throw new Error(`${label}: HTTP ${response.status}. Check credentials, permissions, keys and service limits.`);
-    }
-    try { return JSON.parse(body); } catch { throw new Error(`${label}: expected a JSON response.`); }
-  }
-}
 
 export async function authenticateXray() {
   const token = await requestJson(`${XRAY}/authenticate`, {
@@ -155,12 +116,6 @@ export async function linkExecutionToPlan(testPlanKey, testExecKey, token) {
   console.log(`Linked ${testExecKey} to Xray Test Plan ${testPlanKey}.`);
 }
 
-async function readNonemptyFile(path, maxBytes) {
-  const info = await stat(path);
-  if (!info.isFile() || info.size === 0 || info.size > maxBytes) throw new Error(`Missing, empty or oversized report: ${path}`);
-  return readFile(path);
-}
-
 export async function importResultsToXray(testExecKey, xmlReportPath, token) {
   validateKey(testExecKey);
   const xml = await readNonemptyFile(xmlReportPath, 50 * 1024 * 1024);
@@ -262,22 +217,27 @@ export async function discoverTests(cwd, keys, env = process.env, cli = resolve(
 }
 
 export async function main(command = process.argv[2]) {
+  const mode = deploymentMode();
+  const client = mode === 'datacenter' && ['select', 'import', 'attach'].includes(command)
+    ? createDataCenterClient() : null;
   if (command === 'validate') {
+    if (mode === 'datacenter') dataCenterBaseUrl(required('JIRA_BASE_URL'));
     validateKey(required('TEST_PLAN_KEY'), 'Test Plan key');
     validateKey(required('TEST_EXEC_KEY'), 'Test Execution key');
     console.log('Dispatch keys validated.');
   } else if (command === 'select') {
     const plan = validateKey(required('TEST_PLAN_KEY'));
     const execution = validateKey(required('TEST_EXEC_KEY'));
-    const token = await authenticateXray();
-    const keys = await fetchTestKeys(plan, token);
-    await linkExecutionToPlan(plan, execution, token);
+    const token = client ? undefined : await authenticateXray();
+    const keys = await (client ? client.fetchTestKeys(plan) : fetchTestKeys(plan, token));
+    await (client ? client.linkExecutionToPlan(plan, execution) : linkExecutionToPlan(plan, execution, token));
     const grep = buildGrepFilter(keys);
     await mkdir(dirname(STATE), { recursive: true });
-    await writeFile(STATE, JSON.stringify({ plan, execution, keys, grep }, null, 2));
+    await writeFile(STATE, JSON.stringify({ mode, plan, execution, keys, grep }, null, 2));
     if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `grep=${grep}\n`);
   } else if (command === 'run') {
     const selection = JSON.parse(await readFile(STATE, 'utf8'));
+    if ((selection.mode ?? 'cloud') !== mode) throw new Error('Selection belongs to a different Jira deployment.');
     if (selection.plan !== required('TEST_PLAN_KEY') || selection.execution !== required('TEST_EXEC_KEY')) throw new Error('Selection belongs to a different dispatch.');
     const grep = buildGrepFilter(selection.keys);
     const cwd = resolve(process.env.SOURCE_DIR ?? 'tcoe-playwright-repo');
@@ -291,11 +251,15 @@ export async function main(command = process.argv[2]) {
     if (run.error) throw new Error('Could not start Playwright.');
     process.exitCode = run.status ?? 1;
   } else if (command === 'import') {
-    const token = await authenticateXray();
-    await importResultsToXray(required('TEST_EXEC_KEY'), process.env.XML_REPORT_PATH ?? 'tcoe-playwright-repo/results/xray-results.xml', token);
+    const execution = required('TEST_EXEC_KEY');
+    const path = process.env.XML_REPORT_PATH ?? 'tcoe-playwright-repo/results/xray-results.xml';
+    if (client) await client.importResultsToXray(execution, path);
+    else await importResultsToXray(execution, path, await authenticateXray());
   } else if (command === 'attach') {
-    await uploadReportToJira(required('TEST_EXEC_KEY'), process.env.HTML_REPORT_PATH ?? 'tcoe-playwright-repo/TCOE-Report/index.html',
-      required('JIRA_DOMAIN'), required('JIRA_USER_EMAIL'), required('JIRA_API_TOKEN'));
+    const execution = required('TEST_EXEC_KEY');
+    const path = process.env.HTML_REPORT_PATH ?? 'tcoe-playwright-repo/TCOE-Report/index.html';
+    if (client) await client.uploadReportToJira(execution, path);
+    else await uploadReportToJira(execution, path, required('JIRA_DOMAIN'), required('JIRA_USER_EMAIL'), required('JIRA_API_TOKEN'));
   } else {
     throw new Error('Usage: node scripts/xray-orchestrator.js <validate|select|run|import|attach>');
   }
